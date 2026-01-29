@@ -28,7 +28,6 @@ type template struct {
 	dangerousWrite   bool
 }
 
-// test 2
 const (
 	ENROLLEE_SUPPLIES_SUBJECT      int32 = 0x00000001
 	SUBJECT_REQUIRE_DIRECTORY_PATH int32 = 0x00000080
