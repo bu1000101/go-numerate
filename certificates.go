@@ -350,7 +350,7 @@ type EnterpriseCA struct {
 func GetEnterpriseCAs(l *ldap.Conn, baseDN string) ([]EnterpriseCA, error) {
 
 	configNC := "CN=CDP,CN=Public Key Services,CN=Services," + baseDN
-	fmt.Println("CONFIG: ", configNC)
+	//fmt.Println("CONFIG: ", configNC)
 	req := ldap.NewSearchRequest(
 		configNC,
 		ldap.ScopeWholeSubtree,
@@ -368,7 +368,6 @@ func GetEnterpriseCAs(l *ldap.Conn, baseDN string) ([]EnterpriseCA, error) {
 
 	res, err := l.Search(req)
 	if err != nil {
-		fmt.Println("nothing")
 		return nil, err
 	}
 
@@ -534,7 +533,7 @@ func certConfirmed(l *ldap.Conn, query string, output string) {
 				}
 			}
 			if certTemplates[i].dangerousEnroll && !certTemplates[i].managerApproval && certTemplates[i].enrolleeSupplies && certTemplates[i].clientAuth {
-				fmt.Printf("\n[*] ESC1 : Low level user can supplie enrollee subject!")
+				fmt.Printf("\n[*] ESC1 : Low level user can supply enrollee subject!")
 			}
 			if certTemplates[i].dangerousWrite {
 				fmt.Printf("\n[*] ESC5 : Low level user can change certificate template!")
