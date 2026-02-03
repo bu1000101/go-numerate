@@ -92,6 +92,7 @@ func authenticate(l *ldap.Conn) {
 		log.Fatal(err)
 	} else {
 		fmt.Println("Successfully authenticated!")
+		fmt.Println("Base DN: ", baseDN)
 	}
 }
 
