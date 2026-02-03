@@ -85,14 +85,14 @@ func authenticate(l *ldap.Conn) {
 	}
 
 	baseDN = sr.Entries[0].GetAttributeValue("defaultNamingContext")
-	//fmt.Println("Base DN:", baseDN)
+	fmt.Println("Base DN:", baseDN)
 	//username and pw bind
 	err = l.Bind(userPtr, pwPtr)
 	if err != nil {
 		log.Fatal(err)
 	} else {
 		fmt.Println("Successfully authenticated!")
-		fmt.Println("Base DN: ", baseDN)
+		//fmt.Println("Base DN: ", baseDN)
 	}
 }
 
