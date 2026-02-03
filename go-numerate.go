@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/go-ldap/ldap/v3"
 )
@@ -54,6 +55,19 @@ func checkNec() {
 	}
 }
 
+func DNtoDomain(dn string) string {
+	parts := strings.Split(string(dn), ",")
+	var domainParts []string
+	for _, part := range parts {
+		if strings.HasPrefix(strings.TrimSpace(part), "DC=") {
+			domainParts = append(domainParts, strings.TrimPrefix(strings.TrimSpace(part), "DC="))
+		}
+
+	}
+	return strings.Join(domainParts, ".")
+
+}
+
 func authenticate(l *ldap.Conn) {
 
 	// anonymous bind to get DN
@@ -87,6 +101,12 @@ func authenticate(l *ldap.Conn) {
 	baseDN = sr.Entries[0].GetAttributeValue("defaultNamingContext")
 	fmt.Println("Base DN:", baseDN)
 	//username and pw bind
+	domainName := DNtoDomain(baseDN)
+	if domainPtr != "" {
+		domainName = domainPtr
+	}
+	userPtr = userPtr + "@" + domainName
+	fmt.Println("Attempting authentication with user:", userPtr)
 	err = l.Bind(userPtr, pwPtr)
 	if err != nil {
 		log.Fatal(err)
