@@ -30,7 +30,7 @@ func init() {
 	flag.StringVar(&dcIP, "dc-ip", "", "Domain Controller IP")
 	flag.StringVar(&domainPtr, "domain", "", "Active Directory Domain")
 	flag.StringVar(&domainPtr, "d", "", "Active Directory Domain")
-	flag.StringVar(&searchItem, "search", "", "(users, computers, oudated computers, certificates)")
+	flag.StringVar(&searchItem, "search", "", "(users, computers, oudated computers, certs(cert templates))")
 	flag.StringVar(&query, "query", "*", "search query")
 	flag.StringVar(&query, "q", "*", "search query")
 	flag.StringVar(&outputType, "output", "console", "(console*, csv)")
