@@ -56,8 +56,8 @@ func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, op
 		if err != nil {
 			return nil, false, err
 		}
-		fmt.Printf("[DEBUG] Returning token, len: %d, needContinue: true\n", len(tokenBytes))
-		return tokenBytes, true, nil
+		fmt.Printf("[DEBUG] Returning token, len: %d, needContinue: false\n", len(tokenBytes))
+		return tokenBytes, false, nil
 	}
 
 	if token != nil && len(token) > 0 {
