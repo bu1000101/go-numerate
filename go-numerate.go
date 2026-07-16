@@ -30,34 +30,45 @@ func (g *gssapiClient) InitSecContext(target string, token []byte) ([]byte, bool
 }
 
 func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, options []int) ([]byte, bool, error) {
+	fmt.Printf("[DEBUG] InitSecContext called, token len: %d, started: %v\n", len(token), g.started)
+
 	if g.ctx == nil {
+		fmt.Println("[DEBUG] Creating SPNEGO client for SPN:", g.spn)
 		g.ctx = spnego.SPNEGOClient(g.client, g.spn)
+		fmt.Println("[DEBUG] Getting service ticket...")
 		_, key, err := g.client.GetServiceTicket(g.spn)
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to get service ticket: %v", err)
 		}
 		g.key = key
+		fmt.Println("[DEBUG] Got service ticket")
 	}
 
 	if !g.started {
 		g.started = true
+		fmt.Println("[DEBUG] Calling InitSecContext...")
 		tok, err := g.ctx.InitSecContext()
 		if err != nil {
 			return nil, false, err
 		}
+		fmt.Println("[DEBUG] Marshaling token...")
 		tokenBytes, err := tok.Marshal()
 		if err != nil {
 			return nil, false, err
 		}
+		fmt.Printf("[DEBUG] Returning token, len: %d, needContinue: true\n", len(tokenBytes))
 		return tokenBytes, true, nil
 	}
 
 	if token != nil {
+		fmt.Println("[DEBUG] Processing server response token...")
 		var respToken spnego.SPNEGOToken
 		if err := respToken.Unmarshal(token); err != nil {
 			return nil, false, err
 		}
+		fmt.Println("[DEBUG] Calling AcceptSecContext...")
 		_, _, status := g.ctx.AcceptSecContext(&respToken)
+		fmt.Printf("[DEBUG] AcceptSecContext status: %v\n", status.Code)
 		if status.Code != gssapi.StatusComplete && status.Code != gssapi.StatusContinueNeeded {
 			return nil, false, fmt.Errorf("GSSAPI: %v", status)
 		}
@@ -65,19 +76,24 @@ func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, op
 			return nil, true, nil
 		}
 	}
+	fmt.Println("[DEBUG] InitSecContext complete")
 	return nil, false, nil
 }
 
 func (g *gssapiClient) NegotiateSaslAuth(token []byte, authzid string) ([]byte, error) {
+	fmt.Printf("[DEBUG] NegotiateSaslAuth called, token len: %d\n", len(token))
+
 	if len(token) == 0 {
 		return nil, fmt.Errorf("empty token")
 	}
 
 	var wrapToken gssapi.WrapToken
 	if err := wrapToken.Unmarshal(token, true); err != nil {
+		fmt.Println("[DEBUG] WrapToken unmarshal error:", err)
 		return nil, err
 	}
 
+	fmt.Println("[DEBUG] Verifying wrap token...")
 	if ok, err := wrapToken.Verify(g.key, gssapi.ContextFlagMutual); !ok || err != nil {
 		return nil, fmt.Errorf("token verification failed: %v", err)
 	}
@@ -92,11 +108,13 @@ func (g *gssapiClient) NegotiateSaslAuth(token []byte, authzid string) ([]byte, 
 	copy(response[1:4], payload[1:4])
 	copy(response[4:], []byte(authzid))
 
+	fmt.Println("[DEBUG] Creating response wrap token...")
 	respToken, err := gssapi.NewInitiatorWrapToken(response, g.key)
 	if err != nil {
 		return nil, err
 	}
 
+	fmt.Println("[DEBUG] NegotiateSaslAuth complete")
 	return respToken.Marshal()
 }
 
@@ -110,6 +128,7 @@ var hashPtr string
 var kerberosAuth bool
 var noPass bool
 var dcIP string
+var dcHost string
 var domainPtr string
 var searchItem string
 var l ldap.Conn
@@ -130,6 +149,7 @@ func init() {
 	flag.BoolVar(&kerberosAuth, "k", false, "Use Kerberos authentication")
 	flag.BoolVar(&noPass, "no-pass", false, "No password (use with -k for ccache auth)")
 	flag.StringVar(&dcIP, "dc-ip", "", "Domain Controller IP")
+	flag.StringVar(&dcHost, "dc-host", "", "Domain Controller hostname (required for -k)")
 	flag.StringVar(&domainPtr, "domain", "", "Active Directory Domain")
 	flag.StringVar(&domainPtr, "d", "", "Active Directory Domain")
 	flag.StringVar(&searchItem, "search", "", "(users, computers, oudated computers, certs(cert templates))")
@@ -143,25 +163,31 @@ func init() {
 }
 
 func checkNec() {
-	if kerberosAuth && noPass {
-		ccache := os.Getenv("KRB5CCNAME")
-		if ccache == "" {
-			fmt.Println("Error: KRB5CCNAME environment variable not set")
+	if kerberosAuth {
+		if dcHost == "" {
+			fmt.Println("Error: --dc-host is required when using -k")
 			os.Exit(1)
+		}
+		if noPass {
+			ccache := os.Getenv("KRB5CCNAME")
+			if ccache == "" {
+				fmt.Println("Error: KRB5CCNAME environment variable not set")
+				os.Exit(1)
+			}
 		}
 	} else {
 		if userPtr == "" {
 			fmt.Println("Error: --username or -u is required")
 			os.Exit(1)
 		}
-		if pwPtr == "" && hashPtr == "" && !kerberosAuth {
-			fmt.Println("Error: --password (-p), --hashes (-H), or -k is required")
+		if pwPtr == "" && hashPtr == "" {
+			fmt.Println("Error: --password (-p) or --hashes (-H) is required")
 			os.Exit(1)
 		}
-	}
-	if dcIP == "" {
-		fmt.Println("Error: --dc-ip is required")
-		os.Exit(1)
+		if dcIP == "" {
+			fmt.Println("Error: --dc-ip is required")
+			os.Exit(1)
+		}
 	}
 }
 
@@ -373,7 +399,7 @@ func authenticateKerberos(l *ldap.Conn) {
 		}
 	}
 
-	spn := "ldap/" + dcIP
+	spn := "ldap/" + dcHost
 	gssClient := &gssapiClient{
 		client: krb5Client,
 		spn:    spn,
@@ -397,7 +423,13 @@ func main() {
 
 	flag.Parse()
 	checkNec()
-	ldapURL := "ldap://" + dcIP + ":389"
+
+	var ldapURL string
+	if kerberosAuth {
+		ldapURL = "ldap://" + dcHost + ":389"
+	} else {
+		ldapURL = "ldap://" + dcIP + ":389"
+	}
 	l, err := ldap.DialURL(ldapURL)
 	if err != nil {
 		log.Fatal(err)
