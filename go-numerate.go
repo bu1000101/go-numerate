@@ -60,10 +60,11 @@ func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, op
 		return tokenBytes, true, nil
 	}
 
-	if token != nil {
-		fmt.Println("[DEBUG] Processing server response token...")
+	if token != nil && len(token) > 0 {
+		fmt.Printf("[DEBUG] Processing server response token (len=%d)...\n", len(token))
 		var respToken spnego.SPNEGOToken
 		if err := respToken.Unmarshal(token); err != nil {
+			fmt.Println("[DEBUG] Failed to unmarshal response token:", err)
 			return nil, false, err
 		}
 		fmt.Println("[DEBUG] Calling AcceptSecContext...")
@@ -75,8 +76,10 @@ func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, op
 		if status.Code == gssapi.StatusContinueNeeded {
 			return nil, true, nil
 		}
+	} else {
+		fmt.Printf("[DEBUG] No server token to process (token=%v)\n", token)
 	}
-	fmt.Println("[DEBUG] InitSecContext complete")
+	fmt.Println("[DEBUG] InitSecContext complete, returning needContinue=false")
 	return nil, false, nil
 }
 
