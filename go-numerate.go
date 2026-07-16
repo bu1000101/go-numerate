@@ -58,7 +58,8 @@ func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, op
 		if err != nil {
 			return nil, false, err
 		}
-		return tokenBytes, true, nil
+		// Return false to skip mutual auth - AD accepts this
+		return tokenBytes, false, nil
 	}
 
 	if token != nil && len(token) > 0 {
