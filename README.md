@@ -9,6 +9,31 @@ git clone https://github.com/bu1000101/go-numerate.git
 go build -o go-numerate
 ```
 
+Authentication Supported:
+```
+
+1. Password: -u user -p password
+2. NTLM hash: -u user -H hash or -u user --hashes LM:NT
+3. Kerberos with password: -u user -p password -k
+4. Kerberos with ccache: -k -no-pass (reads KRB5CCNAME)
+
+# Password
+./go-numerate -u username -p password -k -dc-ip 10.0.0.1
+
+# NTLM hash auth
+./go-numerate -u user -H hash or -u user --hashes LM:NT
+
+# Kerberos with password
+./go-numerate -u username -p password -k -dc-ip 10.0.0.1
+
+# Kerberos with ccache (no password)
+export KRB5CCNAME=/tmp/krb5cc_user
+./go-numerate -k -no-pass -dc-ip 10.0.0.1
+
+# The ccache can also use FILE: prefix
+export KRB5CCNAME=FILE:/tmp/krb5cc_user
+```
+
 Example search for users:
 ```
 // Search specific user and output to console
