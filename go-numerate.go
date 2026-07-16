@@ -27,6 +27,8 @@ import (
 
 type gssapiClient struct {
 	client  *client.Client
+	spn     string
+	ctx     *spnego.SPNEGO
 	ekey    types.EncryptionKey
 	subkey  types.EncryptionKey
 	started bool
@@ -37,49 +39,50 @@ func (g *gssapiClient) InitSecContext(target string, token []byte) ([]byte, bool
 }
 
 func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, options []int) ([]byte, bool, error) {
-	gssapiFlags := []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf, gssapi.ContextFlagMutual}
-
-	if token == nil {
-		tkt, ekey, err := g.client.GetServiceTicket(target)
+	if g.ctx == nil {
+		g.ctx = spnego.SPNEGOClient(g.client, g.spn)
+		_, ekey, err := g.client.GetServiceTicket(g.spn)
 		if err != nil {
-			return nil, false, err
+			return nil, false, fmt.Errorf("failed to get service ticket: %v", err)
 		}
 		g.ekey = ekey
-
-		tok, err := spnego.NewKRB5TokenAPREQ(g.client, tkt, ekey, gssapiFlags, []int{})
-		if err != nil {
-			return nil, false, err
-		}
-
-		output, err := tok.Marshal()
-		if err != nil {
-			return nil, false, err
-		}
-
-		return output, true, nil
 	}
 
-	var tok spnego.KRB5Token
-	if err := tok.Unmarshal(token); err != nil {
-		return nil, false, err
-	}
-
-	if tok.IsAPRep() {
-		encpart, err := crypto.DecryptEncPart(tok.APRep.EncPart, g.ekey, keyusage.AP_REP_ENCPART)
+	if !g.started {
+		g.started = true
+		tok, err := g.ctx.InitSecContext()
 		if err != nil {
 			return nil, false, err
 		}
-
-		part := &messages.EncAPRepPart{}
-		if err = part.Unmarshal(encpart); err != nil {
+		tokenBytes, err := tok.Marshal()
+		if err != nil {
 			return nil, false, err
 		}
-		g.subkey = part.Subkey
+		return tokenBytes, true, nil
+	}
+
+	if token != nil && len(token) > 0 {
+		var respToken spnego.SPNEGOToken
+		if err := respToken.Unmarshal(token); err != nil {
+			return nil, false, err
+		}
+
+		// Extract subkey from the AP-REP if present
+		if respToken.NegTokenResp.ResponseToken != nil {
+			var krb5Token spnego.KRB5Token
+			if err := krb5Token.Unmarshal(respToken.NegTokenResp.ResponseToken); err == nil {
+				if krb5Token.IsAPRep() {
+					encpart, err := crypto.DecryptEncPart(krb5Token.APRep.EncPart, g.ekey, keyusage.AP_REP_ENCPART)
+					if err == nil {
+						part := &messages.EncAPRepPart{}
+						if err = part.Unmarshal(encpart); err == nil {
+							g.subkey = part.Subkey
+						}
+					}
+				}
+			}
+		}
 		return []byte{}, false, nil
-	}
-
-	if tok.IsKRBError() {
-		return nil, false, tok.KRBError
 	}
 
 	return []byte{}, false, nil
@@ -96,8 +99,9 @@ func (g *gssapiClient) NegotiateSaslAuth(input []byte, authzid string) ([]byte, 
 		return nil, fmt.Errorf("got a Wrapped token that's not from the server")
 	}
 
+	// Use subkey if available and flag is set, otherwise use ekey
 	key := g.ekey
-	if (token.Flags & 0b100) != 0 {
+	if (token.Flags&0b100) != 0 && g.subkey.KeyType != 0 {
 		key = g.subkey
 	}
 
@@ -451,9 +455,8 @@ func authenticateKerberos(l *ldap.Conn) {
 		}
 	}
 
-	gssClient := &gssapiClient{client: krb5Client}
-
 	spn := "ldap/" + dcHost
+	gssClient := &gssapiClient{client: krb5Client, spn: spn}
 	fmt.Println("Attempting Kerberos authentication...")
 	err = l.GSSAPIBind(gssClient, spn, "")
 	if err != nil {
