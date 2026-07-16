@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/go-ldap/ldap/v3"
 	"github.com/jcmturner/gokrb5/v8/client"
@@ -76,11 +78,9 @@ func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, op
 		if status.Code == gssapi.StatusContinueNeeded {
 			return nil, true, nil
 		}
-	} else {
-		fmt.Printf("[DEBUG] No server token to process (token=%v)\n", token)
 	}
 	fmt.Println("[DEBUG] InitSecContext complete, returning needContinue=false")
-	return []byte{}, false, nil
+	return nil, false, nil
 }
 
 func (g *gssapiClient) NegotiateSaslAuth(token []byte, authzid string) ([]byte, error) {
@@ -436,11 +436,11 @@ func main() {
 	} else {
 		ldapURL = "ldap://" + dcIP + ":389"
 	}
-	l, err := ldap.DialURL(ldapURL)
+	l, err := ldap.DialURL(ldapURL, ldap.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}))
 	if err != nil {
 		log.Fatal(err)
-
 	}
+	l.SetTimeout(10 * time.Second)
 	defer l.Close()
 
 	if kerberosAuth {
