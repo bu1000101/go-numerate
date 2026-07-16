@@ -80,7 +80,7 @@ func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, op
 		fmt.Printf("[DEBUG] No server token to process (token=%v)\n", token)
 	}
 	fmt.Println("[DEBUG] InitSecContext complete, returning needContinue=false")
-	return nil, false, nil
+	return []byte{}, false, nil
 }
 
 func (g *gssapiClient) NegotiateSaslAuth(token []byte, authzid string) ([]byte, error) {
