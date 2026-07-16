@@ -11,120 +11,8 @@ import (
 	"time"
 
 	"github.com/go-ldap/ldap/v3"
-	"github.com/jcmturner/gokrb5/v8/client"
-	"github.com/jcmturner/gokrb5/v8/config"
-	"github.com/jcmturner/gokrb5/v8/credentials"
-	"github.com/jcmturner/gokrb5/v8/gssapi"
-	"github.com/jcmturner/gokrb5/v8/spnego"
-	"github.com/jcmturner/gokrb5/v8/types"
+	"github.com/go-ldap/ldap/v3/gssapi"
 )
-
-type gssapiClient struct {
-	client  *client.Client
-	spn     string
-	ctx     *spnego.SPNEGO
-	key     types.EncryptionKey
-	started bool
-}
-
-func (g *gssapiClient) InitSecContext(target string, token []byte) ([]byte, bool, error) {
-	return g.InitSecContextWithOptions(target, token, nil)
-}
-
-func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, options []int) ([]byte, bool, error) {
-	fmt.Printf("[DEBUG] InitSecContext called, token len: %d, started: %v\n", len(token), g.started)
-
-	if g.ctx == nil {
-		fmt.Println("[DEBUG] Creating SPNEGO client for SPN:", g.spn)
-		g.ctx = spnego.SPNEGOClient(g.client, g.spn)
-		fmt.Println("[DEBUG] Getting service ticket...")
-		_, key, err := g.client.GetServiceTicket(g.spn)
-		if err != nil {
-			return nil, false, fmt.Errorf("failed to get service ticket: %v", err)
-		}
-		g.key = key
-		fmt.Println("[DEBUG] Got service ticket")
-	}
-
-	if !g.started {
-		g.started = true
-		fmt.Println("[DEBUG] Calling InitSecContext...")
-		tok, err := g.ctx.InitSecContext()
-		if err != nil {
-			return nil, false, err
-		}
-		fmt.Println("[DEBUG] Marshaling token...")
-		tokenBytes, err := tok.Marshal()
-		if err != nil {
-			return nil, false, err
-		}
-		fmt.Printf("[DEBUG] Returning token, len: %d, needContinue: true\n", len(tokenBytes))
-		return tokenBytes, true, nil
-	}
-
-	if token != nil && len(token) > 0 {
-		fmt.Printf("[DEBUG] Processing server response token (len=%d)...\n", len(token))
-		var respToken spnego.SPNEGOToken
-		if err := respToken.Unmarshal(token); err != nil {
-			fmt.Println("[DEBUG] Failed to unmarshal response token:", err)
-			return nil, false, err
-		}
-		fmt.Println("[DEBUG] Calling AcceptSecContext...")
-		_, _, status := g.ctx.AcceptSecContext(&respToken)
-		fmt.Printf("[DEBUG] AcceptSecContext status: %v\n", status.Code)
-		if status.Code != gssapi.StatusComplete && status.Code != gssapi.StatusContinueNeeded {
-			return nil, false, fmt.Errorf("GSSAPI: %v", status)
-		}
-		if status.Code == gssapi.StatusContinueNeeded {
-			return nil, true, nil
-		}
-	}
-	fmt.Println("[DEBUG] InitSecContext complete, returning needContinue=false")
-	return nil, false, nil
-}
-
-func (g *gssapiClient) NegotiateSaslAuth(token []byte, authzid string) ([]byte, error) {
-	fmt.Printf("[DEBUG] NegotiateSaslAuth CALLED! token len: %d, authzid: %s\n", len(token), authzid)
-	fmt.Printf("[DEBUG] Token bytes: %x\n", token)
-
-	if len(token) == 0 {
-		return nil, fmt.Errorf("empty token")
-	}
-
-	var wrapToken gssapi.WrapToken
-	if err := wrapToken.Unmarshal(token, true); err != nil {
-		fmt.Println("[DEBUG] WrapToken unmarshal error:", err)
-		return nil, err
-	}
-
-	fmt.Println("[DEBUG] Verifying wrap token...")
-	if ok, err := wrapToken.Verify(g.key, gssapi.ContextFlagMutual); !ok || err != nil {
-		return nil, fmt.Errorf("token verification failed: %v", err)
-	}
-
-	payload := wrapToken.Payload
-	if len(payload) < 4 {
-		return nil, fmt.Errorf("invalid token length")
-	}
-
-	response := make([]byte, 4+len(authzid))
-	response[0] = payload[0] & 0x01
-	copy(response[1:4], payload[1:4])
-	copy(response[4:], []byte(authzid))
-
-	fmt.Println("[DEBUG] Creating response wrap token...")
-	respToken, err := gssapi.NewInitiatorWrapToken(response, g.key)
-	if err != nil {
-		return nil, err
-	}
-
-	fmt.Println("[DEBUG] NegotiateSaslAuth complete")
-	return respToken.Marshal()
-}
-
-func (g *gssapiClient) DeleteSecContext() error {
-	return nil
-}
 
 var userPtr string
 var pwPtr string
@@ -360,9 +248,7 @@ func authenticateKerberos(l *ldap.Conn) {
 	forestDN = sr.Entries[0].GetAttributeValue("rootDomainNamingContext")
 	fmt.Println("Forest DN:", forestDN)
 
-	domainName := DNtoDomain(baseDN)
 	if domainPtr != "" {
-		domainName = domainPtr
 		parts := strings.Split(domainPtr, ".")
 		var dnParts []string
 		for _, p := range parts {
@@ -371,48 +257,32 @@ func authenticateKerberos(l *ldap.Conn) {
 		baseDN = strings.Join(dnParts, ",")
 	}
 
-	var krb5Client *client.Client
+	var gssClient *gssapi.Client
 
 	if noPass {
 		ccachePath := os.Getenv("KRB5CCNAME")
 		ccachePath = strings.TrimPrefix(ccachePath, "FILE:")
 		fmt.Println("Using ccache:", ccachePath)
 
-		ccache, err := credentials.LoadCCache(ccachePath)
+		gssClient, err = gssapi.NewClientFromCCache(ccachePath, "/etc/krb5.conf")
 		if err != nil {
-			log.Fatal("Failed to load ccache: ", err)
-		}
-
-		krb5Conf := config.New()
-		krb5Conf.LibDefaults.DefaultRealm = strings.ToUpper(domainName)
-		krb5Conf.LibDefaults.DNSLookupKDC = true
-
-		krb5Client, err = client.NewFromCCache(ccache, krb5Conf)
-		if err != nil {
-			log.Fatal("Failed to create Kerberos client from ccache: ", err)
+			log.Fatal("Failed to create GSSAPI client from ccache: ", err)
 		}
 	} else {
-		krb5Conf := config.New()
-		krb5Conf.LibDefaults.DefaultRealm = strings.ToUpper(domainName)
-		krb5Conf.LibDefaults.DNSLookupKDC = true
-
-		krb5Client = client.NewWithPassword(userPtr, strings.ToUpper(domainName), pwPtr, krb5Conf)
-		err = krb5Client.Login()
+		realm := strings.ToUpper(domainPtr)
+		if realm == "" {
+			realm = strings.ToUpper(DNtoDomain(baseDN))
+		}
+		gssClient, err = gssapi.NewClientWithPassword(userPtr, realm, pwPtr, "/etc/krb5.conf")
 		if err != nil {
-			log.Fatal("Kerberos login failed: ", err)
+			log.Fatal("Failed to create GSSAPI client: ", err)
 		}
 	}
+	defer gssClient.Close()
 
 	spn := "ldap/" + dcHost
-	gssClient := &gssapiClient{
-		client: krb5Client,
-		spn:    spn,
-	}
-
 	fmt.Println("Attempting Kerberos authentication...")
-	fmt.Println("[DEBUG] Calling l.GSSAPIBind...")
 	err = l.GSSAPIBind(gssClient, spn, "")
-	fmt.Println("[DEBUG] GSSAPIBind returned")
 	if err != nil {
 		log.Fatal("GSSAPI bind failed: ", err)
 	}
