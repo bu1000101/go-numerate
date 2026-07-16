@@ -409,7 +409,9 @@ func authenticateKerberos(l *ldap.Conn) {
 	}
 
 	fmt.Println("Attempting Kerberos authentication...")
+	fmt.Println("[DEBUG] Calling l.GSSAPIBind...")
 	err = l.GSSAPIBind(gssClient, spn, "")
+	fmt.Println("[DEBUG] GSSAPIBind returned")
 	if err != nil {
 		log.Fatal("GSSAPI bind failed: ", err)
 	}
