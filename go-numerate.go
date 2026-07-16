@@ -11,7 +11,10 @@ import (
 	"time"
 
 	"github.com/go-ldap/ldap/v3"
-	"github.com/go-ldap/ldap/v3/gssapi"
+	"github.com/jcmturner/gokrb5/v8/client"
+	"github.com/jcmturner/gokrb5/v8/config"
+	"github.com/jcmturner/gokrb5/v8/credentials"
+	ldapgssapi "github.com/go-ldap/ldap/v3/gssapi"
 )
 
 var userPtr string
@@ -248,7 +251,9 @@ func authenticateKerberos(l *ldap.Conn) {
 	forestDN = sr.Entries[0].GetAttributeValue("rootDomainNamingContext")
 	fmt.Println("Forest DN:", forestDN)
 
+	domainName := DNtoDomain(baseDN)
 	if domainPtr != "" {
+		domainName = domainPtr
 		parts := strings.Split(domainPtr, ".")
 		var dnParts []string
 		for _, p := range parts {
@@ -257,26 +262,40 @@ func authenticateKerberos(l *ldap.Conn) {
 		baseDN = strings.Join(dnParts, ",")
 	}
 
-	var gssClient *gssapi.Client
+	realm := strings.ToUpper(domainName)
+
+	krb5Conf := config.New()
+	krb5Conf.LibDefaults.DefaultRealm = realm
+	krb5Conf.LibDefaults.DNSLookupKDC = true
+	krb5Conf.LibDefaults.DNSLookupRealm = true
+	krb5Conf.LibDefaults.UDPPreferenceLimit = 1
+
+	var gssClient *ldapgssapi.Client
 
 	if noPass {
 		ccachePath := os.Getenv("KRB5CCNAME")
 		ccachePath = strings.TrimPrefix(ccachePath, "FILE:")
 		fmt.Println("Using ccache:", ccachePath)
 
-		gssClient, err = gssapi.NewClientFromCCache(ccachePath, "/etc/krb5.conf")
+		ccache, err := credentials.LoadCCache(ccachePath)
 		if err != nil {
-			log.Fatal("Failed to create GSSAPI client from ccache: ", err)
+			log.Fatal("Failed to load ccache: ", err)
 		}
+
+		krb5Client, err := client.NewFromCCache(ccache, krb5Conf)
+		if err != nil {
+			log.Fatal("Failed to create Kerberos client from ccache: ", err)
+		}
+
+		gssClient = &ldapgssapi.Client{Client: krb5Client}
 	} else {
-		realm := strings.ToUpper(domainPtr)
-		if realm == "" {
-			realm = strings.ToUpper(DNtoDomain(baseDN))
-		}
-		gssClient, err = gssapi.NewClientWithPassword(userPtr, realm, pwPtr, "/etc/krb5.conf")
+		krb5Client := client.NewWithPassword(userPtr, realm, pwPtr, krb5Conf)
+		err = krb5Client.Login()
 		if err != nil {
-			log.Fatal("Failed to create GSSAPI client: ", err)
+			log.Fatal("Kerberos login failed: ", err)
 		}
+
+		gssClient = &ldapgssapi.Client{Client: krb5Client}
 	}
 	defer gssClient.Close()
 
