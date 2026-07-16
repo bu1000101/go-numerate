@@ -56,8 +56,8 @@ func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, op
 		if err != nil {
 			return nil, false, err
 		}
-		fmt.Printf("[DEBUG] Returning token, len: %d, needContinue: false\n", len(tokenBytes))
-		return tokenBytes, false, nil
+		fmt.Printf("[DEBUG] Returning token, len: %d, needContinue: true\n", len(tokenBytes))
+		return tokenBytes, true, nil
 	}
 
 	if token != nil && len(token) > 0 {
@@ -84,7 +84,8 @@ func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, op
 }
 
 func (g *gssapiClient) NegotiateSaslAuth(token []byte, authzid string) ([]byte, error) {
-	fmt.Printf("[DEBUG] NegotiateSaslAuth called, token len: %d\n", len(token))
+	fmt.Printf("[DEBUG] NegotiateSaslAuth CALLED! token len: %d, authzid: %s\n", len(token), authzid)
+	fmt.Printf("[DEBUG] Token bytes: %x\n", token)
 
 	if len(token) == 0 {
 		return nil, fmt.Errorf("empty token")
