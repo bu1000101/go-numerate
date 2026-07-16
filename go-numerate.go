@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -62,8 +63,8 @@ func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, op
 		if err != nil {
 			return nil, false, err
 		}
-		fmt.Printf("[DEBUG] Returning %d bytes, needContinue=true\n", len(tokenBytes))
-		return tokenBytes, true, nil
+		fmt.Printf("[DEBUG] Returning %d bytes, needContinue=false\n", len(tokenBytes))
+		return tokenBytes, false, nil
 	}
 
 	if token != nil && len(token) > 0 {
@@ -490,11 +491,12 @@ func main() {
 
 	var ldapURL string
 	if kerberosAuth {
-		ldapURL = "ldap://" + dcHost + ":389"
+		// Use LDAPS for Kerberos to avoid GSSAPI security layer issues
+		ldapURL = "ldaps://" + dcHost + ":636"
 	} else {
 		ldapURL = "ldap://" + dcIP + ":389"
 	}
-	l, err := ldap.DialURL(ldapURL, ldap.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}))
+	l, err := ldap.DialURL(ldapURL, ldap.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}), ldap.DialWithTLSConfig(&tls.Config{InsecureSkipVerify: true}))
 	if err != nil {
 		log.Fatal(err)
 	}
