@@ -39,7 +39,10 @@ func (g *gssapiClient) InitSecContext(target string, token []byte) ([]byte, bool
 }
 
 func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, options []int) ([]byte, bool, error) {
+	fmt.Printf("[DEBUG] InitSecContext: token=%d bytes, started=%v\n", len(token), g.started)
+
 	if g.ctx == nil {
+		fmt.Println("[DEBUG] Creating SPNEGO context")
 		g.ctx = spnego.SPNEGOClient(g.client, g.spn)
 		_, ekey, err := g.client.GetServiceTicket(g.spn)
 		if err != nil {
@@ -50,6 +53,7 @@ func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, op
 
 	if !g.started {
 		g.started = true
+		fmt.Println("[DEBUG] Generating initial token")
 		tok, err := g.ctx.InitSecContext()
 		if err != nil {
 			return nil, false, err
@@ -58,37 +62,45 @@ func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, op
 		if err != nil {
 			return nil, false, err
 		}
+		fmt.Printf("[DEBUG] Returning %d bytes, needContinue=true\n", len(tokenBytes))
 		return tokenBytes, true, nil
 	}
 
 	if token != nil && len(token) > 0 {
+		fmt.Printf("[DEBUG] Processing server response (%d bytes)\n", len(token))
 		var respToken spnego.SPNEGOToken
 		if err := respToken.Unmarshal(token); err != nil {
+			fmt.Println("[DEBUG] Failed to unmarshal:", err)
 			return nil, false, err
 		}
 
-		// Extract subkey from the AP-REP if present
 		if respToken.NegTokenResp.ResponseToken != nil {
+			fmt.Printf("[DEBUG] ResponseToken present (%d bytes)\n", len(respToken.NegTokenResp.ResponseToken))
 			var krb5Token spnego.KRB5Token
 			if err := krb5Token.Unmarshal(respToken.NegTokenResp.ResponseToken); err == nil {
 				if krb5Token.IsAPRep() {
+					fmt.Println("[DEBUG] Got AP-REP, extracting subkey")
 					encpart, err := crypto.DecryptEncPart(krb5Token.APRep.EncPart, g.ekey, keyusage.AP_REP_ENCPART)
 					if err == nil {
 						part := &messages.EncAPRepPart{}
 						if err = part.Unmarshal(encpart); err == nil {
 							g.subkey = part.Subkey
+							fmt.Println("[DEBUG] Subkey extracted successfully")
 						}
 					}
 				}
 			}
 		}
+		fmt.Println("[DEBUG] Returning needContinue=false")
 		return []byte{}, false, nil
 	}
 
+	fmt.Println("[DEBUG] No token, returning needContinue=false")
 	return []byte{}, false, nil
 }
 
 func (g *gssapiClient) NegotiateSaslAuth(input []byte, authzid string) ([]byte, error) {
+	fmt.Printf("[DEBUG] NegotiateSaslAuth called with %d bytes\n", len(input))
 	token := &gssapi.WrapToken{}
 	err := unmarshalWrapToken(token, input, true)
 	if err != nil {
