@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -14,8 +17,162 @@ import (
 	"github.com/jcmturner/gokrb5/v8/client"
 	"github.com/jcmturner/gokrb5/v8/config"
 	"github.com/jcmturner/gokrb5/v8/credentials"
-	ldapgssapi "github.com/go-ldap/ldap/v3/gssapi"
+	"github.com/jcmturner/gokrb5/v8/crypto"
+	"github.com/jcmturner/gokrb5/v8/gssapi"
+	"github.com/jcmturner/gokrb5/v8/iana/keyusage"
+	"github.com/jcmturner/gokrb5/v8/messages"
+	"github.com/jcmturner/gokrb5/v8/spnego"
+	"github.com/jcmturner/gokrb5/v8/types"
 )
+
+type gssapiClient struct {
+	client  *client.Client
+	ekey    types.EncryptionKey
+	subkey  types.EncryptionKey
+	started bool
+}
+
+func (g *gssapiClient) InitSecContext(target string, token []byte) ([]byte, bool, error) {
+	return g.InitSecContextWithOptions(target, token, nil)
+}
+
+func (g *gssapiClient) InitSecContextWithOptions(target string, token []byte, options []int) ([]byte, bool, error) {
+	gssapiFlags := []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf, gssapi.ContextFlagMutual}
+
+	if token == nil {
+		tkt, ekey, err := g.client.GetServiceTicket(target)
+		if err != nil {
+			return nil, false, err
+		}
+		g.ekey = ekey
+
+		tok, err := spnego.NewKRB5TokenAPREQ(g.client, tkt, ekey, gssapiFlags, []int{})
+		if err != nil {
+			return nil, false, err
+		}
+
+		output, err := tok.Marshal()
+		if err != nil {
+			return nil, false, err
+		}
+
+		return output, true, nil
+	}
+
+	var tok spnego.KRB5Token
+	if err := tok.Unmarshal(token); err != nil {
+		return nil, false, err
+	}
+
+	if tok.IsAPRep() {
+		encpart, err := crypto.DecryptEncPart(tok.APRep.EncPart, g.ekey, keyusage.AP_REP_ENCPART)
+		if err != nil {
+			return nil, false, err
+		}
+
+		part := &messages.EncAPRepPart{}
+		if err = part.Unmarshal(encpart); err != nil {
+			return nil, false, err
+		}
+		g.subkey = part.Subkey
+		return []byte{}, false, nil
+	}
+
+	if tok.IsKRBError() {
+		return nil, false, tok.KRBError
+	}
+
+	return []byte{}, false, nil
+}
+
+func (g *gssapiClient) NegotiateSaslAuth(input []byte, authzid string) ([]byte, error) {
+	token := &gssapi.WrapToken{}
+	err := unmarshalWrapToken(token, input, true)
+	if err != nil {
+		return nil, err
+	}
+
+	if (token.Flags & 0b1) == 0 {
+		return nil, fmt.Errorf("got a Wrapped token that's not from the server")
+	}
+
+	key := g.ekey
+	if (token.Flags & 0b100) != 0 {
+		key = g.subkey
+	}
+
+	_, err = token.Verify(key, keyusage.GSSAPI_ACCEPTOR_SEAL)
+	if err != nil {
+		return nil, err
+	}
+
+	pl := token.Payload
+	if len(pl) != 4 {
+		return nil, fmt.Errorf("server sent bad final token for SASL GSSAPI handshake")
+	}
+
+	// Request no security layer
+	b := [4]byte{0, 0, 0, 0}
+	payload := append(b[:], []byte(authzid)...)
+
+	encType, err := crypto.GetEtype(key.KeyType)
+	if err != nil {
+		return nil, err
+	}
+
+	respToken := &gssapi.WrapToken{
+		Flags:     0b100,
+		EC:        uint16(encType.GetHMACBitLength() / 8),
+		RRC:       0,
+		SndSeqNum: 1,
+		Payload:   payload,
+	}
+
+	if err := respToken.SetCheckSum(key, keyusage.GSSAPI_INITIATOR_SEAL); err != nil {
+		return nil, err
+	}
+
+	return respToken.Marshal()
+}
+
+func (g *gssapiClient) DeleteSecContext() error {
+	return nil
+}
+
+func unmarshalWrapToken(wt *gssapi.WrapToken, b []byte, expectFromAcceptor bool) error {
+	if len(b) < 16 {
+		return errors.New("bytes shorter than header length")
+	}
+	tokenID := []byte{0x05, 0x04}
+	if !bytes.Equal(tokenID, b[0:2]) {
+		return fmt.Errorf("wrong Token ID")
+	}
+	flags := b[2]
+	isFromAcceptor := flags&0x01 == 1
+	if isFromAcceptor && !expectFromAcceptor {
+		return errors.New("unexpected acceptor flag")
+	}
+	if !isFromAcceptor && expectFromAcceptor {
+		return errors.New("expected acceptor flag not set")
+	}
+	if b[3] != 0xFF {
+		return fmt.Errorf("unexpected filler byte")
+	}
+	checksumL := binary.BigEndian.Uint16(b[4:6])
+	if int(checksumL) > len(b)-16 {
+		return fmt.Errorf("inconsistent checksum length")
+	}
+	payloadStart := 16 + checksumL
+
+	wt.Flags = flags
+	wt.EC = checksumL
+	wt.RRC = binary.BigEndian.Uint16(b[6:8])
+	wt.SndSeqNum = binary.BigEndian.Uint64(b[8:16])
+	wt.CheckSum = b[16:payloadStart]
+	wt.Payload = b[payloadStart:]
+
+	return nil
+}
 
 var userPtr string
 var pwPtr string
@@ -270,7 +427,7 @@ func authenticateKerberos(l *ldap.Conn) {
 	krb5Conf.LibDefaults.DNSLookupRealm = true
 	krb5Conf.LibDefaults.UDPPreferenceLimit = 1
 
-	var gssClient *ldapgssapi.Client
+	var krb5Client *client.Client
 
 	if noPass {
 		ccachePath := os.Getenv("KRB5CCNAME")
@@ -282,22 +439,19 @@ func authenticateKerberos(l *ldap.Conn) {
 			log.Fatal("Failed to load ccache: ", err)
 		}
 
-		krb5Client, err := client.NewFromCCache(ccache, krb5Conf)
+		krb5Client, err = client.NewFromCCache(ccache, krb5Conf)
 		if err != nil {
 			log.Fatal("Failed to create Kerberos client from ccache: ", err)
 		}
-
-		gssClient = &ldapgssapi.Client{Client: krb5Client}
 	} else {
-		krb5Client := client.NewWithPassword(userPtr, realm, pwPtr, krb5Conf)
+		krb5Client = client.NewWithPassword(userPtr, realm, pwPtr, krb5Conf)
 		err = krb5Client.Login()
 		if err != nil {
 			log.Fatal("Kerberos login failed: ", err)
 		}
-
-		gssClient = &ldapgssapi.Client{Client: krb5Client}
 	}
-	defer gssClient.Close()
+
+	gssClient := &gssapiClient{client: krb5Client}
 
 	spn := "ldap/" + dcHost
 	fmt.Println("Attempting Kerberos authentication...")
